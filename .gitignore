@@ -1,0 +1,30 @@
+# Local environments and build output
+.venv/
+.tools/
+.build-tools/
+build/
+dist/
+tmp/
+reference/
+__pycache__/
+*.py[cod]
+*.log
+
+# Models and downloaded helper payloads are fetched on demand
+src/assets/models/*
+!src/assets/models/face_detection_yunet_2023mar.onnx
+
+# Generated previews are committed, local test outputs are not
+tests/*
+!tests/check_*.py
+!tests/wheel/
+tests/wheel/*
+!tests/wheel/input.png
+
+# Compiled installer/test artifacts
+packaging/*.exe
+packaging/*.dll
+packaging/*.zip
+packaging/Setup-UI-Test.*
+packaging/TestSetup.*
+packaging/TestAnimation.*

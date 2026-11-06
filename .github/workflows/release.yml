@@ -1,0 +1,73 @@
+name: Build Windows release
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/release.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install build dependencies
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install -r requirements-build.txt
+      - name: Verify release discovery
+        shell: pwsh
+        run: |
+          .\.venv\Scripts\python.exe tests/check_updater_channel.py
+          if ($LASTEXITCODE -ne 0) { throw 'Updater channel check failed' }
+          .\.venv\Scripts\python.exe tests/check_updater_release.py
+          if ($LASTEXITCODE -ne 0) { throw 'Release parsing check failed' }
+      - name: Build application and installer
+        shell: pwsh
+        run: |
+          .\scripts\build.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Application build failed' }
+          .\.venv\Scripts\python.exe scripts/package.py
+          if ($LASTEXITCODE -ne 0) { throw 'Installer build failed' }
+      - name: Verify bundled conversions
+        shell: pwsh
+        run: |
+          $verification = Start-Process -FilePath .\dist\ConvertANNY\ConvertANNY.exe -ArgumentList '--verify', "$env:GITHUB_WORKSPACE\build\release-verification" -PassThru -Wait -WindowStyle Hidden
+          if ($verification.ExitCode -ne 0) { throw 'Bundled conversion checks failed' }
+          Get-Content build/release-verification/report.json
+      - name: Package source and checksums
+        shell: pwsh
+        run: |
+          git archive --format=zip --output=dist/ConvertANNY-Source-0.1.0.zip HEAD
+          $assets = @('dist/ConvertANNY-Setup-0.1.0.exe', 'dist/ConvertANNY-Source-0.1.0.zip')
+          $lines = foreach ($asset in $assets) { "$((Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash.ToLower())  $(Split-Path $asset -Leaf)" }
+          $lines | Set-Content -Encoding ascii dist/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ConvertANNY-0.1.0
+          path: |
+            dist/ConvertANNY-Setup-0.1.0.exe
+            dist/ConvertANNY-Source-0.1.0.zip
+            dist/SHA256SUMS.txt
+            build/release-verification/report.json
+      - name: Publish release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view v0.1.0 --repo "$env:GITHUB_REPOSITORY" *> $null
+          if ($LASTEXITCODE -eq 0) { Write-Host 'Release v0.1.0 already exists; leaving its files intact.'; exit 0 }
+          gh release create v0.1.0 dist/ConvertANNY-Setup-0.1.0.exe dist/ConvertANNY-Source-0.1.0.zip dist/SHA256SUMS.txt --repo "$env:GITHUB_REPOSITORY" --target "$env:GITHUB_SHA" --title 'ConvertANNY 0.1.0' --notes 'Windows file converter created by Ace App Co. Includes the Windows setup EXE, matching application source, and SHA-256 checksums. Licensed under AGPL-3.0-only; preserve copyright and attribution notices. This installer is not code-signed.'
+          if ($LASTEXITCODE -ne 0) { throw 'Release publication failed' }
