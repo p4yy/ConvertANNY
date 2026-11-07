@@ -1,0 +1,102 @@
+name: Build Windows release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - VERSION
+      - .github/workflows/release.yml
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version from the VERSION file (for example 0.1.1)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check release version
+        id: version
+        shell: pwsh
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          if ($version -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$') { throw "VERSION is not a valid semantic version: $version" }
+          if ($env:GITHUB_EVENT_NAME -eq 'push') {
+            if ($env:GITHUB_REF_NAME -ne 'main') { throw "Release builds must run from main (got $env:GITHUB_REF_NAME)" }
+          } else {
+            $requested = $env:REQUESTED_VERSION.TrimStart('v')
+            if ($requested -ne $version) { throw "Requested version $requested must match VERSION ($version)" }
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+      - name: Install build dependencies
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install -r requirements-build.txt
+      - name: Verify release discovery
+        shell: pwsh
+        run: |
+          .\.venv\Scripts\python.exe tests/check_updater_channel.py
+          if ($LASTEXITCODE -ne 0) { throw 'Updater channel check failed' }
+          .\.venv\Scripts\python.exe tests/check_updater_release.py
+          if ($LASTEXITCODE -ne 0) { throw 'Release parsing check failed' }
+      - name: Build application and installer
+        shell: pwsh
+        run: |
+          .\scripts\build.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Application build failed' }
+          .\.venv\Scripts\python.exe scripts/package.py
+          if ($LASTEXITCODE -ne 0) { throw 'Installer build failed' }
+      - name: Verify bundled conversions
+        shell: pwsh
+        run: |
+          $verification = Start-Process -FilePath .\dist\ConvertANNY\ConvertANNY.exe -ArgumentList '--verify', "$env:GITHUB_WORKSPACE\build\release-verification" -PassThru -Wait -WindowStyle Hidden
+          if ($verification.ExitCode -ne 0) { throw 'Bundled conversion checks failed' }
+          Get-Content build/release-verification/report.json
+      - name: Package source and checksums
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $installer = "dist/ConvertANNY-Setup-$env:VERSION.exe"
+          $source = "dist/ConvertANNY-Source-$env:VERSION.zip"
+          if (!(Test-Path -LiteralPath $installer)) { throw "Installer not found: $installer" }
+          git archive --format=zip --output=$source HEAD
+          $lines = foreach ($asset in @($installer, $source)) { "$((Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash.ToLower())  $(Split-Path $asset -Leaf)" }
+          $lines | Set-Content -Encoding ascii dist/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ConvertANNY-${{ steps.version.outputs.version }}
+          path: |
+            dist/ConvertANNY-Setup-${{ steps.version.outputs.version }}.exe
+            dist/ConvertANNY-Source-${{ steps.version.outputs.version }}.zip
+            dist/SHA256SUMS.txt
+            build/release-verification/report.json
+      - name: Publish release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $tag = "v$env:VERSION"
+          gh release view $tag --repo "$env:GITHUB_REPOSITORY" *> $null
+          if ($LASTEXITCODE -eq 0) { throw "Release $tag already exists. Increase VERSION before creating another release." }
+          gh release create $tag "dist/ConvertANNY-Setup-$env:VERSION.exe" "dist/ConvertANNY-Source-$env:VERSION.zip" dist/SHA256SUMS.txt --repo "$env:GITHUB_REPOSITORY" --target "$env:GITHUB_SHA" --title "ConvertANNY $env:VERSION" --notes 'Windows installer, matching source archive and SHA-256 checksums. Licensed under AGPL-3.0-only. This installer is not code-signed.'
+          if ($LASTEXITCODE -ne 0) { throw "Publishing $tag failed" }
+

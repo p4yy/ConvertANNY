@@ -1,0 +1,25 @@
+name: Feature request
+description: Suggest an improvement to ConvertANNY.
+title: "[Feature]: "
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: Describe the task or difficulty.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would help?
+      description: Describe the behavior you would like.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Other approaches
+      description: Mention any workarounds you use, if relevant.
+    validations:
+      required: false
